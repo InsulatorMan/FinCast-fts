@@ -1,2 +1,31 @@
-# FinCast-fts
-This is the official implementation of CIKM 2025 FinCast Financial Time series foundation model
+# FinCast: A Foundation Model for Financial Time-Series Forecasting
+
+[![Paper](https://img.shields.io/badge/Paper-CIKM%202025-blue)](link-to-paper) todo
+[![License](https://img.shields.io/badge/License-Apache%202.0-green)](LICENSE)
+[![Python](https://img.shields.io/badge/python-3.10%2B-blue)]()
+[![PyTorch](https://img.shields.io/badge/PyTorch-2.1%2B-orange)]()
+
+This repository contains the official implementation of **FinCast**, introduced in our paper:
+
+> **FinCast: A Foundation Model for Financial Time-Series Forecasting**  
+> Zhuohang Zhu, Haodong Chen, Qiang Qu, Vera Chung  
+> *CIKM 2025* (Accepted)
+
+FinCast is a **decoder-only transformer** trained on over **20B financial time points** across diverse domains and temporal resolutions.  
+Technical Highlights:
+- **PQ-Loss**: Joint point + probabilistic forecasting.
+- **Mixture-of-Experts (MoE)**: Specialization across domains.
+
+---
+
+## 🔥 Features
+- Foundation model for **financial time-series forecasting**, flexible input and output length.
+- Strong performance in **zero-shot**, **supervised**, and **few-shot** settings.
+- Modular architecture with **MoE routing** and **quantile-aware loss**.
+- Scalable to **billions of parameters** with efficient inference.
+
+---
+
+## 📦 Installation
+
+WIP
