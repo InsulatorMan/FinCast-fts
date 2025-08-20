@@ -2,8 +2,8 @@
 
 [![Paper](https://img.shields.io/badge/Paper-CIKM%202025-blue)](link-to-paper) todo
 [![License](https://img.shields.io/badge/License-Apache%202.0-green)](LICENSE)
-[![Python](https://img.shields.io/badge/python-3.10%2B-blue)]()
-[![PyTorch](https://img.shields.io/badge/PyTorch-2.1%2B-orange)]()
+[![Python](https://img.shields.io/badge/python-3.11%2B-blue)]()
+[![PyTorch](https://img.shields.io/badge/PyTorch-2.5%2B-orange)]()
 
 This repository contains the official implementation of **FinCast**, introduced in our paper:
 
