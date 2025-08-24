@@ -21,11 +21,16 @@ Technical Highlights:
 ## 🔥 Features
 - Foundation model for **financial time-series forecasting**, flexible input and output length.
 - Strong performance in **zero-shot**, **supervised**, and **few-shot** settings.
-- Modular architecture with **MoE routing** and **quantile-aware loss**.
+- Modular architecture with **MoE** and **quantile-aware loss**.
 - Scalable to **billions of parameters** with efficient inference.
 
 ---
 
 ## 📦 Installation
+
+The model weight can be found on https://huggingface.co/Vincent05R/FinCast
+The model code can be found on https://github.com/vincent05r/FinCast-fts
+
+
 
 WIP
