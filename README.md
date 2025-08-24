@@ -28,18 +28,18 @@ Technical Highlights:
 
 ## 📦 Installation
 
-- The model weight can be found on https://huggingface.co/Vincent05R/FinCast
+- The model weight can be found on 🤗 https://huggingface.co/Vincent05R/FinCast
 - The model code can be found on https://github.com/vincent05r/FinCast-fts
 
 Run the env_setup.sh first then run the dep_install.sh.
 
-## 📦 Experiments
+## 📊 Experiments
 
 - run the corresponding scripts in the scripts directory to reproduce the results in the paper. The result summary can be generate using the result summary notebook in the notebook directory.
 
 
 
-## 🔥 Future Updates
+## ⚡ Future Updates
 
 - PEFT finetune(LORA/DORA) is done, just need to do some testing
 - Package together for easy inference
