@@ -28,8 +28,8 @@ Technical Highlights:
 
 ## 📦 Installation
 
-The model weight can be found on https://huggingface.co/Vincent05R/FinCast
-The model code can be found on https://github.com/vincent05r/FinCast-fts
+- The model weight can be found on https://huggingface.co/Vincent05R/FinCast
+- The model code can be found on https://github.com/vincent05r/FinCast-fts
 
 
 
