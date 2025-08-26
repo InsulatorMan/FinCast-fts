@@ -30,6 +30,7 @@ Technical Highlights:
 
 - The model weight can be found on 🤗 https://huggingface.co/Vincent05R/FinCast
 - The model code can be found on https://github.com/vincent05r/FinCast-fts
+- The corresponding datasets to reproduce the results can be found on https://huggingface.co/datasets/Vincent05R/FinCast-Paper-test
 
 Run the env_setup.sh first then run the dep_install.sh.
 
