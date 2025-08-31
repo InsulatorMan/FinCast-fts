@@ -9,7 +9,7 @@ This repository contains the official implementation of **FinCast**, introduced 
 
 > **FinCast: A Foundation Model for Financial Time-Series Forecasting**  
 > Zhuohang Zhu, Haodong Chen, Qiang Qu, Vera Chung  
-> *CIKM 2025* (Accepted)
+> *CIKM 2025* (Accepted)  
 > Arxiv link: https://arxiv.org/abs/2508.19609
 
 FinCast is a **decoder-only transformer** trained on over **20B financial time points** across diverse domains and temporal resolutions.  
