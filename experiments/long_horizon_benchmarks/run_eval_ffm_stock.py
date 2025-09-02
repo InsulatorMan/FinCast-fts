@@ -1,5 +1,3 @@
-# Copyright 2024 The Google Research Authors.
-#
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at
@@ -46,13 +44,6 @@ EPS = 1e-7
 def get_forecasts(model, past, freq):
   """Get forecasts. add for median and quantiile output supports"""
  
-  # if forecast_mode == 'median':
-  #   lfreq = [freq] * past.shape[0]
-  #   _, out = model.forecast(list(past), lfreq)
-  #   out = out[:, :, 5]
-
-  # elif forecast_mode == 'mean':
-
   
   lfreq = [freq] * past.shape[0]
   out, full_output = model.forecast(list(past), lfreq)

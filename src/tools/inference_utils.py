@@ -7,11 +7,7 @@ import logging
 import numpy as np
 import pandas as pd
 import torch
-import torch.multiprocessing as mp
 import matplotlib.pyplot as plt
-import yfinance as yf # type: ignore
-from absl import app, flags # type: ignore
-from huggingface_hub import snapshot_download # type: ignore
 from torch.utils.data import Dataset
 
 
@@ -19,6 +15,254 @@ from torch.utils.data import Dataset
 from ffm import FFM, FFmHparams
 
 from ffm.pytorch_patched_decoder_MOE import PatchedTimeSeriesDecoder_MOE
+
+from tools.utils import log_model_statistics, make_logging_file 
+from tools.model_utils import get_model_FFM
+
+
+
+
+
+class TimeSeriesDataset_SingleCSV_Inference(Dataset):
+    """
+    Inference-only dataset for a SINGLE CSV.
+
+    Output signature matches your training dataset:
+        (x_context, x_padding, freq, x_future)
+
+    Shapes/dtypes:
+        x_context: [L, 1], float32
+        x_padding: [L, 1], float32 (zeros; no masking at inference)
+        freq:      [1],   int64
+        x_future:  [0, 1], float32 (empty; no ground truth at inference)
+
+    Modes:
+      - sliding_windows=False: one sample per selected column (the LAST L values).
+      - sliding_windows=True: stride=1 over the series, generating all full windows.
+
+    Notes:
+      - Each selected column is treated as an independent univariate series.
+      - If you normalized during training, prefer doing the SAME normalization upstream.
+        `series_norm=True` here applies simple per-series z-score on the full column.
+    """
+
+    def __init__(
+        self,
+        csv_path: str,
+        context_length: int,
+        freq_type: int,
+        columns: Optional[List[Union[int, str]]] = None,
+        first_c_date: bool = True,
+        series_norm: bool = False,
+        dropna: bool = True,
+        sliding_windows: bool = False,   # NEW: stride=1 windows if True
+    ):
+        super().__init__()
+        if context_length <= 0:
+            raise ValueError("context_length must be positive.")
+        self.csv_path = csv_path
+        self.L = int(context_length)
+        self.freq_type = int(freq_type)
+        self.first_c_date = bool(first_c_date)
+        self.series_norm = bool(series_norm)
+        self.dropna = bool(dropna)
+        self.sliding_windows = bool(sliding_windows)
+
+        # ---- Load CSV
+        df = pd.read_csv(csv_path)
+
+        # ---- Resolve columns to use
+        if columns is None:
+            start_idx = 1 if self.first_c_date else 0
+            use_cols = list(df.columns[start_idx:])
+        else:
+            use_cols = []
+            ncols = len(df.columns)
+            for c in columns:
+                if isinstance(c, int):
+                    if c < 0 or c >= ncols:
+                        raise IndexError(
+                            f"Column index {c} out of range [0, {ncols-1}] for CSV '{csv_path}'."
+                        )
+                    use_cols.append(df.columns[c])
+                elif isinstance(c, str):
+                    if c not in df.columns:
+                        raise KeyError(f"Column '{c}' not found in CSV '{csv_path}'.")
+                    use_cols.append(c)
+                else:
+                    raise TypeError("columns entries must be int indices or str names.")
+
+        # ---- Optional row-wise NaN drop (before numeric coercion)
+        if self.dropna:
+            df = df.dropna(axis=0).reset_index(drop=True)
+
+        # ---- Build per-series numeric arrays
+        self.series_arrays: List[np.ndarray] = []
+        for c in use_cols:
+            s = pd.to_numeric(df[c], errors="coerce")
+            arr = s.to_numpy(dtype=np.float32)
+            if self.dropna:
+                arr = arr[~np.isnan(arr)]
+            else:
+                # if not dropping, still ensure enough valid tail for slicing
+                if np.isnan(arr).any():
+                    raise ValueError(
+                        f"Column '{c}' contains NaNs; set dropna=True or clean prior to loading."
+                    )
+
+            if len(arr) < self.L:
+                raise ValueError(
+                    f"Column '{c}' too short: len={len(arr)} < context_length={self.L}."
+                )
+
+            if self.series_norm:
+                mu = float(arr.mean())
+                sigma = float(arr.std(ddof=0))
+                if sigma == 0.0:
+                    sigma = 1.0
+                arr = (arr - mu) / sigma
+
+            self.series_arrays.append(arr)
+
+        # ---- Build indices for __getitem__
+        # For compatibility with your length-aware sampler, we maintain sample_lengths.
+        self.index_records: List[Tuple[int, int]] = []  # (series_idx, start_idx) only used in sliding mode
+        if self.sliding_windows:
+            # stride=1 windows for each series
+            for sidx, arr in enumerate(self.series_arrays):
+                n = len(arr)
+                # number of full windows: n - L + 1
+                for start in range(0, n - self.L + 1):
+                    self.index_records.append((sidx, start))
+            self.sample_lengths = [self.L] * len(self.index_records)
+        else:
+            # one sample per series (the last window)
+            self.sample_lengths = [self.L] * len(self.series_arrays)
+
+    def __len__(self) -> int:
+        if self.sliding_windows:
+            return len(self.index_records)
+        return len(self.series_arrays)
+
+    def get_length(self, idx: int) -> int:
+        return self.sample_lengths[idx]
+
+    def __getitem__(self, idx: int):
+        if self.sliding_windows:
+            series_idx, start_idx = self.index_records[idx]
+            series = self.series_arrays[series_idx]
+            ctx_np = series[start_idx : start_idx + self.L]
+        else:
+            series = self.series_arrays[idx]
+            ctx_np = series[-self.L:]  # last L points
+
+        # Tensors
+        x_context = torch.as_tensor(ctx_np, dtype=torch.float32).unsqueeze(-1)  # [L,1]
+        x_padding = torch.zeros((self.L, 1), dtype=torch.float32)               # [L,1]
+        freq = torch.tensor([self.freq_type], dtype=torch.long)                 # [1]
+        x_future = torch.empty((0, 1), dtype=torch.float32)                     # [0,1]
+
+        return x_context, x_padding, freq, x_future
+
+    # Convenience: get a list of all samples (useful without a DataLoader)
+    def as_list(self):
+        return [self[i] for i in range(len(self))]
+
+    def __repr__(self) -> str:
+        mode = "sliding" if self.sliding_windows else "last-only"
+        return (f"{self.__class__.__name__}(csv_path='{self.csv_path}', "
+                f"L={self.L}, freq={self.freq_type}, num_series={len(self.series_arrays)}, "
+                f"mode={mode}, series_norm={self.series_norm}, dropna={self.dropna})")
+
+
+
+
+
+
+
+
+def freq_reader_inference(freq: str) -> int:
+
+    freq = str.upper(freq)
+    if freq.endswith("MS"):
+        return 1
+    elif freq.endswith(("H", "T", "MIN", "D", "B", "U", "S")):
+        return 0
+    elif freq.endswith(("W", "M")):
+        return 1
+    elif freq.endswith(("Y", "Q", "A")):
+        return 2
+    else:
+        print("Invalid frequency, default to fast freq: 0")
+        return 0
+
+
+
+
+
+
+def get_forecasts_f(model, past, freq):
+  """Get forecasts. add for median and quantiile output supports"""
+ 
+  
+  lfreq = [freq] * past.shape[0]
+  out, full_output = model.forecast(list(past), lfreq)
+
+
+  return out, full_output
+
+
+
+
+
+def get_model_api(config):
+  model_path = config.model_path
+
+  ffm_hparams = FFmHparams(
+      backend="gpu",
+      per_core_batch_size=32,
+      horizon_len=config.horizon_len,  #variable
+      context_len=config.context_len,  # Context length can be anything up to 2048 in multiples of 32
+      use_positional_embedding=False,
+      num_experts=config.num_experts,
+      gating_top_n=config.gating_top_n,
+      load_from_compile=config.load_from_compile,
+      point_forecast_mode=config.forecast_mode,
+  )
+
+
+  model_actual, ffm_config, ffm_api = get_model_FFM(model_path, ffm_hparams)
+
+  ffm_api.model_eval_mode()
+
+  log_model_statistics(model_actual)
+
+  return ffm_api
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
