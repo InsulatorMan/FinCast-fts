@@ -1,6 +1,7 @@
 import os
 from os import path
-from typing import Optional, Tuple, Union, List
+from typing import List, Optional, Tuple, Union, Dict, Any
+from types import SimpleNamespace
 
 import logging
 
@@ -23,11 +24,85 @@ from tools.model_utils import get_model_FFM
 
 
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+class FinCast_Inference:
+
+
+    def __init__(
+            self,
+            config: SimpleNamespace,
+            ):
+        
+        self.config = config
+
+        self.inference_freq = freq_reader_inference(config.data_frequency)
+
+        self.inference_dataset = TimeSeriesDataset_SingleCSV_Inference(csv_path=self.config.data_path,
+                                                                       context_length=self.config.context_len,
+                                                                       freq_type=self.config.inference_freq,
+                                                                       columns=self.config.columns_target,
+                                                                       first_c_date=True,
+                                                                       series_norm=self.config.series_norm,
+                                                                       dropna=False,
+                                                                       sliding_windows=self.config.all_data)
+        
+
+
+
+        if self.config.model_version.lower() == "v1":
+            self.config.num_experts = 4
+            self.config.gating_top_n = 2
+            self.config.load_from_compile = True
+
+        self.model_api = get_model_api(self.config)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 class TimeSeriesDataset_SingleCSV_Inference(Dataset):
     """
     Inference-only dataset for a SINGLE CSV.
 
-    Output signature matches your training dataset:
+    Output signature (default, training-compatible):
         (x_context, x_padding, freq, x_future)
 
     Shapes/dtypes:
@@ -38,12 +113,12 @@ class TimeSeriesDataset_SingleCSV_Inference(Dataset):
 
     Modes:
       - sliding_windows=False: one sample per selected column (the LAST L values).
-      - sliding_windows=True: stride=1 over the series, generating all full windows.
+      - sliding_windows=True: stride=1 windows across the series for each column.
 
-    Notes:
-      - Each selected column is treated as an independent univariate series.
-      - If you normalized during training, prefer doing the SAME normalization upstream.
-        `series_norm=True` here applies simple per-series z-score on the full column.
+    NEW:
+      - return_meta (bool): if True, __getitem__ returns a 5th item: a dict with
+        fields that identify which column/window the sample comes from. Default False
+        to preserve training-time compatibility.
     """
 
     def __init__(
@@ -55,7 +130,9 @@ class TimeSeriesDataset_SingleCSV_Inference(Dataset):
         first_c_date: bool = True,
         series_norm: bool = False,
         dropna: bool = True,
-        sliding_windows: bool = False,   # NEW: stride=1 windows if True
+        sliding_windows: bool = False,
+        # --------- CHANGE: new flag to emit metadata at inference ----------
+        return_meta: bool = False,   # NEW
     ):
         super().__init__()
         if context_length <= 0:
@@ -67,6 +144,7 @@ class TimeSeriesDataset_SingleCSV_Inference(Dataset):
         self.series_norm = bool(series_norm)
         self.dropna = bool(dropna)
         self.sliding_windows = bool(sliding_windows)
+        self.return_meta = bool(return_meta)   # NEW
 
         # ---- Load CSV
         df = pd.read_csv(csv_path)
@@ -92,27 +170,30 @@ class TimeSeriesDataset_SingleCSV_Inference(Dataset):
                 else:
                     raise TypeError("columns entries must be int indices or str names.")
 
-        # ---- Optional row-wise NaN drop (before numeric coercion)
+        # Optional row-wise NaN drop
         if self.dropna:
             df = df.dropna(axis=0).reset_index(drop=True)
 
-        # ---- Build per-series numeric arrays
+        # ---- Build per-series numeric arrays + names/indices
         self.series_arrays: List[np.ndarray] = []
-        for c in use_cols:
-            s = pd.to_numeric(df[c], errors="coerce")
+        self.series_names: List[str] = []           # NEW: track for meta
+        self.series_col_indices: List[int] = []     # NEW: track for meta
+
+        for name in use_cols:
+            col_idx = df.columns.get_loc(name)
+            s = pd.to_numeric(df[name], errors="coerce")
             arr = s.to_numpy(dtype=np.float32)
             if self.dropna:
                 arr = arr[~np.isnan(arr)]
             else:
-                # if not dropping, still ensure enough valid tail for slicing
                 if np.isnan(arr).any():
                     raise ValueError(
-                        f"Column '{c}' contains NaNs; set dropna=True or clean prior to loading."
+                        f"Column '{name}' contains NaNs; set dropna=True or clean prior to loading."
                     )
 
             if len(arr) < self.L:
                 raise ValueError(
-                    f"Column '{c}' too short: len={len(arr)} < context_length={self.L}."
+                    f"Column '{name}' too short: len={len(arr)} < context_length={self.L}."
                 )
 
             if self.series_norm:
@@ -123,38 +204,51 @@ class TimeSeriesDataset_SingleCSV_Inference(Dataset):
                 arr = (arr - mu) / sigma
 
             self.series_arrays.append(arr)
+            self.series_names.append(str(name))         # NEW
+            self.series_col_indices.append(int(col_idx))# NEW
 
         # ---- Build indices for __getitem__
-        # For compatibility with your length-aware sampler, we maintain sample_lengths.
-        self.index_records: List[Tuple[int, int]] = []  # (series_idx, start_idx) only used in sliding mode
+        self.index_records: List[Tuple[int, int]] = []  # (series_idx, start_idx) for sliding mode
         if self.sliding_windows:
-            # stride=1 windows for each series
             for sidx, arr in enumerate(self.series_arrays):
                 n = len(arr)
-                # number of full windows: n - L + 1
-                for start in range(0, n - self.L + 1):
+                for start in range(0, n - self.L + 1):  # stride = 1
                     self.index_records.append((sidx, start))
             self.sample_lengths = [self.L] * len(self.index_records)
         else:
-            # one sample per series (the last window)
             self.sample_lengths = [self.L] * len(self.series_arrays)
 
     def __len__(self) -> int:
-        if self.sliding_windows:
-            return len(self.index_records)
-        return len(self.series_arrays)
+        return len(self.index_records) if self.sliding_windows else len(self.series_arrays)
 
     def get_length(self, idx: int) -> int:
         return self.sample_lengths[idx]
+
+    def _make_meta(self, series_idx: int, window_start: int) -> Dict[str, Any]:
+        """NEW: Build a lightweight metadata dict for plotting & traceability."""
+        return {
+            "csv_path": self.csv_path,
+            "series_idx": int(series_idx),
+            "series_name": self.series_names[series_idx],
+            "column_idx": self.series_col_indices[series_idx],
+            "context_length": int(self.L),
+            "freq_type": int(self.freq_type),
+            "window_start": int(window_start),
+            "window_end": int(window_start + self.L - 1),
+        }
 
     def __getitem__(self, idx: int):
         if self.sliding_windows:
             series_idx, start_idx = self.index_records[idx]
             series = self.series_arrays[series_idx]
             ctx_np = series[start_idx : start_idx + self.L]
+            meta = self._make_meta(series_idx, start_idx)  # NEW
         else:
-            series = self.series_arrays[idx]
-            ctx_np = series[-self.L:]  # last L points
+            series_idx = idx
+            series = self.series_arrays[series_idx]
+            start_idx = len(series) - self.L
+            ctx_np = series[-self.L:]
+            meta = self._make_meta(series_idx, start_idx)  # NEW
 
         # Tensors
         x_context = torch.as_tensor(ctx_np, dtype=torch.float32).unsqueeze(-1)  # [L,1]
@@ -162,17 +256,10 @@ class TimeSeriesDataset_SingleCSV_Inference(Dataset):
         freq = torch.tensor([self.freq_type], dtype=torch.long)                 # [1]
         x_future = torch.empty((0, 1), dtype=torch.float32)                     # [0,1]
 
-        return x_context, x_padding, freq, x_future
-
-    # Convenience: get a list of all samples (useful without a DataLoader)
-    def as_list(self):
-        return [self[i] for i in range(len(self))]
-
-    def __repr__(self) -> str:
-        mode = "sliding" if self.sliding_windows else "last-only"
-        return (f"{self.__class__.__name__}(csv_path='{self.csv_path}', "
-                f"L={self.L}, freq={self.freq_type}, num_series={len(self.series_arrays)}, "
-                f"mode={mode}, series_norm={self.series_norm}, dropna={self.dropna})")
+        # --------- CHANGE: optionally return metadata as 5th element ----------
+        if self.return_meta:
+            return x_context, x_padding, freq, x_future, meta  # NEW
+        return x_context, x_padding, freq, x_future            # original
 
 
 
