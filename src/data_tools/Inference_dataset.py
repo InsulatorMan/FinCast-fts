@@ -198,28 +198,3 @@ def collate_with_optional_meta(batch: List[Tuple]):
 
 
 
-
-# -------- DataLoader builder (safe for num_workers=0) --------
-def make_inference_loader(
-    ds: Dataset,
-    batch_size: int = 256,
-    num_workers: int = 4,
-    pin_memory: bool = True,
-    persistent_workers: bool = True,
-    prefetch_factor: int = 4,
-) -> DataLoader:
-    # IMPORTANT FIX:
-    # PyTorch raises if prefetch_factor is passed with num_workers=0.
-    # So we add it conditionally.
-    dl_kwargs = dict(
-        dataset=ds,
-        batch_size=batch_size,
-        shuffle=False,
-        num_workers=num_workers,
-        pin_memory=pin_memory,
-        persistent_workers=(persistent_workers and num_workers > 0),
-        collate_fn=collate_with_optional_meta,
-    )
-    if num_workers > 0:
-        dl_kwargs["prefetch_factor"] = prefetch_factor
-    return DataLoader(**dl_kwargs)

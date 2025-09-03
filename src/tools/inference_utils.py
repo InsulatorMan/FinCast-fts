@@ -58,12 +58,14 @@ class FinCast_Inference:
 
         self.inference_dataset = TimeSeriesDataset_SingleCSV_Inference(csv_path=self.config.data_path,
                                                                        context_length=self.config.context_len,
-                                                                       freq_type=self.config.inference_freq,
+                                                                       freq_type=self.inference_freq,
                                                                        columns=self.config.columns_target,
                                                                        first_c_date=True,
                                                                        series_norm=self.config.series_norm,
-                                                                       dropna=False,
-                                                                       sliding_windows=self.config.all_data)
+                                                                       dropna=getattr(self.config, "dropna", True),
+                                                                       sliding_windows=self.config.all_data,
+                                                                       return_meta=True,                                   # CHANGE: enable mapping output
+                                                                       )
         
 
 
@@ -75,42 +77,66 @@ class FinCast_Inference:
 
         self.model_api = get_model_api(self.config)
 
+        self.device = getattr(self.config, "device", "cuda")
 
     
-    # -------- Inference runner with mapping (tensor forward) --------
-    def run_inference_with_mapping(
-        model,
-        ds: TimeSeriesDataset_SingleCSV_Inference,
+    # -------- Internal: robust DataLoader, safe with num_workers=0 --------
+    def _make_inference_loader(
+        self,
         batch_size: int = 256,
         num_workers: int = 4,
-        device: Optional[str] = "cuda",
-        amp: bool = True,
+        pin_memory: bool = True,
+        persistent_workers: bool = True,
+        prefetch_factor: int = 4,
+    ) -> DataLoader:
+        dl_kwargs = dict(
+            dataset=self.inference_dataset,
+            batch_size=batch_size,
+            shuffle=False,
+            num_workers=num_workers,
+            pin_memory=pin_memory,
+            persistent_workers=(persistent_workers and num_workers > 0),
+            collate_fn=collate_with_optional_meta,
+        )
+        # === CHANGE: only add prefetch_factor if workers>0 (PyTorch restriction) ===
+        if num_workers > 0:
+            dl_kwargs["prefetch_factor"] = prefetch_factor
+        return DataLoader(**dl_kwargs)
+
+
+    # -------- Integrated inference runner (last-window or sliding) --------
+    # Uses the dataset and model kept in this instance, returns preds + mapping DataFrame
+    def run_inference(
+        self,
+        num_workers: int = 2,
+        device: Optional[str] = None,
+        amp: bool = False,
     ):
         """
-        Runs inference (sliding or last-window) and returns:
-        preds_all: torch.Tensor on CPU, batch-dim first
-        mapping_df: pandas.DataFrame with one row per sample (requires ds.return_meta=True)
-
-        Notes:
-        - Uses inference_mode for speed.
-        - Uses AMP only on CUDA; otherwise falls back to a no-op context.
+        Runs inference over `self.inference_dataset` and returns:
+          preds_all: torch.Tensor on CPU, batch-dim first
+          mapping_df: pandas.DataFrame (requires dataset built with return_meta=True)
         """
-        if not ds.return_meta:
-            raise ValueError("Construct the dataset with return_meta=True to obtain mapping.")
+        ds = self.inference_dataset
+        if not getattr(ds, "return_meta", False):
+            raise ValueError("The dataset must be constructed with return_meta=True.")
 
-        loader = make_inference_loader(
-            ds,
-            batch_size=batch_size,
+        loader = self._make_inference_loader(
+            batch_size=self.config.batch_size,
             num_workers=num_workers,
             pin_memory=True,
             persistent_workers=True,
             prefetch_factor=4,
         )
 
+        model = self.model_api
         model.eval()
+
         preds_collector: List[torch.Tensor] = []
         mapping_rows: List[Dict[str, Any]] = []
 
+        # Resolve device
+        device = self.device if device is None else device
         use_cuda = (device is not None and "cuda" in device and torch.cuda.is_available())
         amp_ctx = torch.autocast(device_type="cuda", dtype=torch.float16) if (amp and use_cuda) else nullcontext()
 
@@ -120,12 +146,13 @@ class FinCast_Inference:
                     x_ctx = x_ctx.to(device, non_blocking=True)
                     freq  = freq.to(device, non_blocking=True)
 
-                # Forward (adapt call signature to your model)
+                # === NOTE ===
+                # If your model API uses a different signature, adapt here.
+                # This assumes model(x_ctx, freq=freq) is supported.
                 preds = model(x_ctx, freq=freq)
-                preds_collector.append(preds.detach().cpu())
 
-                # Meta aligns with batch samples
-                mapping_rows.extend(meta)
+                preds_collector.append(preds.detach().cpu())
+                mapping_rows.extend(meta)   # meta aligns with batch dimension
 
         preds_all = torch.cat(preds_collector, dim=0) if preds_collector else torch.empty(0)
         mapping_df = pd.DataFrame(mapping_rows) if mapping_rows else None
