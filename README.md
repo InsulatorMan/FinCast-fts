@@ -65,16 +65,16 @@ Example 2 Ethereum minute data:
 ![alt text](pics/example2_ETHUSD.png)
 
 
-## 🙌 Credits
-
-- This repository draws inspiration from [TimesFM (Google Research)](https://github.com/google-research/timesfm), as well as [ST-MoE - Pytorch](https://github.com/lucidrains/st-moe-pytorch).  
-
 
 ## ⚡ Future Updates
 
 - PEFT finetune(LORA/DORA) is done, just need to do some testing  
 - Covariate Inference(currently implemented the same code as timesfm)  
 
+
+## 🙌 Credits
+
+- This repository draws inspiration from [TimesFM (Google Research)](https://github.com/google-research/timesfm), as well as [ST-MoE - Pytorch](https://github.com/lucidrains/st-moe-pytorch).  
 
 
 ## ⚠️ Disclaimer
