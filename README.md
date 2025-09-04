@@ -23,7 +23,7 @@ Technical Highlights:
 - Foundation model for **financial time-series forecasting**, flexible input and output length.
 - Strong performance in **zero-shot**, **supervised**, and **few-shot** settings.
 - Modular architecture with **MoE** and **quantile-aware loss**.
-- Scalable to **billions of parameters** with efficient inference.
+- Scalable to **1 billion of parameters** with efficient inference.
 
 ---
 
