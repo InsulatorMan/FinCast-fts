@@ -47,21 +47,22 @@ FinCast supports **training-free inference** — simply download a checkpoint an
 ✨ **Key Inference Features**  
 - ⚡ **Plug-and-Play**: *No training required*. Just load a checkpoint and run inference.  
 - 📏 **Flexible Context & Horizon**: Choose **any input length** and **any forecast length**.  
+- 🔥 **Flexible time frequency and asset types!**: Choose **any frequency** and **any financial assets** such as stock, crypto, futures, forex.  
 - 🎲 **Probabilistic Forecasting**: Native **quantile outputs** for uncertainty & risk analysis.  
 - 🎯 **High Accuracy**: State-of-the-art performance across **financial benchmarks**.  
 
 📘 See the **Inference Notebook** for quick start examples.
 
-Example:
+Example 1 Apple stock minute data:
 
-![alt text](example1_inf.png)
+![alt text](pics/example1_APPL.png.png)
 
 ---
 
 
-example:
+Example 2 Ethereum minute data:
 
-![alt text](example1_inf.png)
+![alt text](pics/example2_ETHUSD.png)
 
 
 ## 🙌 Credits
@@ -72,9 +73,7 @@ example:
 ## ⚡ Future Updates
 
 - PEFT finetune(LORA/DORA) is done, just need to do some testing
-- Package together for easy inference
 - Covariate Inference(currently implemented the same code as timesfm)
-
 
 
 
