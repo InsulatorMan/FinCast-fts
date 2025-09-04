@@ -43,7 +43,6 @@ from contextlib import nullcontext
 
 
 
-
 class FinCast_Inference:
 
 
@@ -111,8 +110,12 @@ class FinCast_Inference:
     ):
         """
         Runs inference over `self.inference_dataset` and returns:
-          preds_all: torch.Tensor on CPU, batch-dim first
-          mapping_df: pandas.DataFrame (requires dataset built with return_meta=True)
+          mean_all : np.ndarray of shape [N, H']        # point (mean) forecasts
+          mapping_df : pandas.DataFrame or None         # per-row metadata (if return_meta=True)
+          full_all : np.ndarray of shape [N, H', D]     # full outputs (mean + quantiles), D = 1 + Q
+        Notes:
+          - If your decoder uses return_forecast_on_context=True, H' = (context_len - patch_len) + horizon_len.
+          - If you need horizon-only later, slice [-self.config.horizon_len:] on axis=1.
         """
         ds = self.inference_dataset
         if not getattr(ds, "return_meta", False):
@@ -128,34 +131,96 @@ class FinCast_Inference:
 
         model = self.model_api
 
-        preds_collector: List[np.ndarray] = []
+        mean_collector: List[np.ndarray] = []
+        full_collector: List[np.ndarray] = []
         mapping_rows: List[Dict[str, Any]] = []
 
-        # Resolve device
+        def _to_numpy(x):
+            if isinstance(x, torch.Tensor):
+                return x.detach().cpu().numpy()
+            elif isinstance(x, np.ndarray):
+                return x
+            else:
+                return np.asarray(x)
+
+        mean_T = None  # expected H' for mean
+        full_T = None  # expected H' for full
+        full_D = None  # expected D = 1 + Q
 
         with torch.inference_mode():
             for x_ctx, x_pad, freq, _x_fut, meta in loader:
-
-                # === NOTE ===
-                # If your model API uses a different signature, adapt here.
-                # This assumes model(x_ctx, freq=freq) is supported.
                 preds = get_forecasts_f(model, x_ctx, freq=freq)
 
-
-                if isinstance(preds, torch.Tensor):
-                    preds_np = preds.detach().cpu().numpy()
-                elif isinstance(preds, np.ndarray):
-                    preds_np = preds
+                # Unpack (mean, full)
+                if isinstance(preds, tuple) and len(preds) == 2:
+                    mean_pred, full_pred = preds
                 else:
-                    preds_np = np.asarray(preds)
+                    # Backward-compat: if get_forecasts_f returns only mean
+                    mean_pred, full_pred = preds, None
 
-                preds_collector.append(preds_np)
-                mapping_rows.extend(meta)   # meta aligns with batch dimension
+                mean_np = _to_numpy(mean_pred)
+                if mean_np.ndim == 1:
+                    # Rare: [H'] -> [B=1, H']
+                    mean_np = mean_np[None, :]
+                if mean_np.ndim != 2:
+                    raise ValueError(f"Expected mean_pred to be [B, H'], got {mean_np.shape}")
 
-        # ---- CHANGE: NumPy-safe concatenation ----
-        preds_all = np.concatenate(preds_collector, axis=0) if preds_collector else np.empty((0,), dtype=np.float32)
+                # Shape consistency check across batches (mean)
+                if mean_T is None:
+                    mean_T = mean_np.shape[1]
+                elif mean_np.shape[1] != mean_T:
+                    raise ValueError(
+                        f"Inconsistent time length for mean across batches: "
+                        f"got {mean_np.shape[1]} vs expected {mean_T}. "
+                        f"Check that context_len/patch_len/horizon_len are constant, "
+                        f"or slice to horizon-only before collecting."
+                    )
+
+                mean_collector.append(mean_np)
+
+                # Full output (mean+quantiles)
+                if full_pred is not None:
+                    full_np = _to_numpy(full_pred)
+                    if full_np.ndim == 2:
+                        # Rare: [H', D] -> [B=1, H', D]
+                        full_np = full_np[None, :, :]
+                    if full_np.ndim != 3:
+                        raise ValueError(f"Expected full_pred to be [B, H', D], got {full_np.shape}")
+
+                    # Shape consistency check across batches (full)
+                    if full_T is None:
+                        full_T = full_np.shape[1]
+                        full_D = full_np.shape[2]
+                    else:
+                        if full_np.shape[1] != full_T:
+                            raise ValueError(
+                                f"Inconsistent time length for full across batches: "
+                                f"got {full_np.shape[1]} vs expected {full_T}. "
+                                f"Align return_forecast_on_context or slice consistently."
+                            )
+                        if full_np.shape[2] != full_D:
+                            raise ValueError(
+                                f"Inconsistent output depth D (1+Q) across batches: "
+                                f"got {full_np.shape[2]} vs expected {full_D}. "
+                                f"Ensure quantile set is fixed."
+                            )
+
+                    full_collector.append(full_np)
+
+                # Meta aligns with batch dim
+                mapping_rows.extend(meta)
+
+        mean_all = (
+            np.concatenate(mean_collector, axis=0)
+            if mean_collector else np.empty((0, 0), dtype=np.float32)
+        )
+        full_all = (
+            np.concatenate(full_collector, axis=0)
+            if full_collector else None
+        )
         mapping_df = pd.DataFrame(mapping_rows) if mapping_rows else None
-        return preds_all, mapping_df
+
+        return mean_all, mapping_df, full_all
 
 
 
