@@ -77,7 +77,6 @@ class FinCast_Inference:
 
         self.model_api = get_model_api(self.config)
 
-        self.device = getattr(self.config, "device", "cuda")
 
     
     # -------- Internal: robust DataLoader, safe with num_workers=0 --------
@@ -109,8 +108,6 @@ class FinCast_Inference:
     def run_inference(
         self,
         num_workers: int = 2,
-        device: Optional[str] = None,
-        amp: bool = False,
     ):
         """
         Runs inference over `self.inference_dataset` and returns:
@@ -130,31 +127,33 @@ class FinCast_Inference:
         )
 
         model = self.model_api
-        model.eval()
 
-        preds_collector: List[torch.Tensor] = []
+        preds_collector: List[np.ndarray] = []
         mapping_rows: List[Dict[str, Any]] = []
 
         # Resolve device
-        device = self.device if device is None else device
-        use_cuda = (device is not None and "cuda" in device and torch.cuda.is_available())
-        amp_ctx = torch.autocast(device_type="cuda", dtype=torch.float16) if (amp and use_cuda) else nullcontext()
 
-        with torch.inference_mode(), amp_ctx:
+        with torch.inference_mode():
             for x_ctx, x_pad, freq, _x_fut, meta in loader:
-                if device is not None:
-                    x_ctx = x_ctx.to(device, non_blocking=True)
-                    freq  = freq.to(device, non_blocking=True)
 
                 # === NOTE ===
                 # If your model API uses a different signature, adapt here.
                 # This assumes model(x_ctx, freq=freq) is supported.
-                preds = model(x_ctx, freq=freq)
+                preds = get_forecasts_f(model, x_ctx, freq=freq)
 
-                preds_collector.append(preds.detach().cpu())
+
+                if isinstance(preds, torch.Tensor):
+                    preds_np = preds.detach().cpu().numpy()
+                elif isinstance(preds, np.ndarray):
+                    preds_np = preds
+                else:
+                    preds_np = np.asarray(preds)
+
+                preds_collector.append(preds_np)
                 mapping_rows.extend(meta)   # meta aligns with batch dimension
 
-        preds_all = torch.cat(preds_collector, dim=0) if preds_collector else torch.empty(0)
+        # ---- CHANGE: NumPy-safe concatenation ----
+        preds_all = np.concatenate(preds_collector, axis=0) if preds_collector else np.empty((0,), dtype=np.float32)
         mapping_df = pd.DataFrame(mapping_rows) if mapping_rows else None
         return preds_all, mapping_df
 
@@ -175,19 +174,41 @@ def collate_with_optional_meta(batch: List[Tuple]):
       - (x_ctx, x_pad, freq, x_fut, meta)
 
     Returns:
-      x_ctx: [B,L,1]
-      x_pad: [B,L,1]
-      freq : [B,1]
-      x_fut: [B,0,1]
+      x_ctx: [B, L]          # squeezed (was [B, L, 1])
+      x_pad: [B, L] or [B, L+H] depending on dataset; squeezed if 3D
+      freq : [B, 1]          # int64
+      x_fut: [B, 0] or [B, H] (squeezed if 3D)
       meta : list[dict] | None
     """
     has_meta = (len(batch[0]) == 5)
 
-    x_ctx  = torch.stack([b[0] for b in batch], dim=0)
-    x_pad  = torch.stack([b[1] for b in batch], dim=0)
-    freq   = torch.stack([b[2] for b in batch], dim=0)
-    x_fut  = torch.stack([b[3] for b in batch], dim=0)
-    meta   = [b[4] for b in batch] if has_meta else None
+    x_ctx = torch.stack([b[0] for b in batch], dim=0)
+    x_pad = torch.stack([b[1] for b in batch], dim=0)
+    freq  = torch.stack([b[2] for b in batch], dim=0)
+    x_fut = torch.stack([b[3] for b in batch], dim=0)
+    meta  = [b[4] for b in batch] if has_meta else None
+
+    # Helper: squeeze trailing singleton channel if present
+    def _squeeze_last(x: torch.Tensor) -> torch.Tensor:
+        if x.dim() == 3 and x.size(-1) == 1:
+            return x.squeeze(-1)  # [B, L, 1] -> [B, L]
+        return x
+
+    x_ctx = _squeeze_last(x_ctx)
+    x_pad = _squeeze_last(x_pad)
+    x_fut = _squeeze_last(x_fut)
+
+    # Normalise freq to [B, 1] int64
+    if freq.dim() == 1:
+        freq = freq.view(-1, 1)
+    elif freq.dim() == 2 and freq.size(1) != 1:
+        # Conservative fallback if dataset returns extra dims
+        freq = freq[:, :1]
+    freq = freq.long()
+
+    # Quick invariants to catch shape regressions early
+    assert x_ctx.dim() == 2, f"x_ctx must be [B,L], got {tuple(x_ctx.shape)}"
+    assert freq.dim() == 2 and freq.size(1) == 1, f"freq must be [B,1], got {tuple(freq.shape)}"
 
     return x_ctx, x_pad, freq, x_fut, meta
 
@@ -242,14 +263,14 @@ def freq_reader_inference(freq: str) -> int:
 
 
 def get_forecasts_f(model, past, freq):
-  """Get forecasts. add for median and quantiile output supports"""
- 
-  
-  lfreq = [freq] * past.shape[0]
-  out, full_output = model.forecast(list(past), lfreq)
+    """Get forecasts. add for median and quantiile output supports"""
 
 
-  return out, full_output
+    lfreq = [freq] * past.shape[0]
+    out, full_output = model.forecast(list(past), lfreq)
+
+
+    return out, full_output
 
 
 
@@ -259,7 +280,7 @@ def get_model_api(config):
   model_path = config.model_path
 
   ffm_hparams = FFmHparams(
-      backend="gpu",
+      backend=config.backend,
       per_core_batch_size=32,
       horizon_len=config.horizon_len,  #variable
       context_len=config.context_len,  # Context length can be anything up to 2048 in multiples of 32
