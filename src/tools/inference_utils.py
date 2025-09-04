@@ -131,7 +131,7 @@ class FinCast_Inference:
 
         model = self.model_api
 
-        mean_collector: List[np.ndarray] = []
+        out_collector: List[np.ndarray] = []
         full_collector: List[np.ndarray] = []
         mapping_rows: List[Dict[str, Any]] = []
 
@@ -143,7 +143,7 @@ class FinCast_Inference:
             else:
                 return np.asarray(x)
 
-        mean_T = None  # expected H' for mean
+        out_T = None  # expected H' for mean
         full_T = None  # expected H' for full
         full_D = None  # expected D = 1 + Q
 
@@ -153,30 +153,30 @@ class FinCast_Inference:
 
                 # Unpack (mean, full)
                 if isinstance(preds, tuple) and len(preds) == 2:
-                    mean_pred, full_pred = preds
+                    out_pred, full_pred = preds
                 else:
                     # Backward-compat: if get_forecasts_f returns only mean
-                    mean_pred, full_pred = preds, None
+                    out_pred, full_pred = preds, None
 
-                mean_np = _to_numpy(mean_pred)
-                if mean_np.ndim == 1:
+                out_np = _to_numpy(out_pred)
+                if out_np.ndim == 1:
                     # Rare: [H'] -> [B=1, H']
-                    mean_np = mean_np[None, :]
-                if mean_np.ndim != 2:
-                    raise ValueError(f"Expected mean_pred to be [B, H'], got {mean_np.shape}")
+                    out_np = out_np[None, :]
+                if out_np.ndim != 2:
+                    raise ValueError(f"Expected mean_pred to be [B, H'], got {out_np.shape}")
 
                 # Shape consistency check across batches (mean)
-                if mean_T is None:
-                    mean_T = mean_np.shape[1]
-                elif mean_np.shape[1] != mean_T:
+                if out_T is None:
+                    out_T = out_np.shape[1]
+                elif out_np.shape[1] != out_T:
                     raise ValueError(
                         f"Inconsistent time length for mean across batches: "
-                        f"got {mean_np.shape[1]} vs expected {mean_T}. "
+                        f"got {out_np.shape[1]} vs expected {out_T}. "
                         f"Check that context_len/patch_len/horizon_len are constant, "
                         f"or slice to horizon-only before collecting."
                     )
 
-                mean_collector.append(mean_np)
+                out_collector.append(out_np)
 
                 # Full output (mean+quantiles)
                 if full_pred is not None:
@@ -210,9 +210,9 @@ class FinCast_Inference:
                 # Meta aligns with batch dim
                 mapping_rows.extend(meta)
 
-        mean_all = (
-            np.concatenate(mean_collector, axis=0)
-            if mean_collector else np.empty((0, 0), dtype=np.float32)
+        out_all = (
+            np.concatenate(out_collector, axis=0)
+            if out_collector else np.empty((0, 0), dtype=np.float32)
         )
         full_all = (
             np.concatenate(full_collector, axis=0)
@@ -220,7 +220,7 @@ class FinCast_Inference:
         )
         mapping_df = pd.DataFrame(mapping_rows) if mapping_rows else None
 
-        return mean_all, mapping_df, full_all
+        return out_all, mapping_df, full_all
 
 
 
