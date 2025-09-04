@@ -55,7 +55,7 @@ FinCast supports **training-free inference** — simply download a checkpoint an
 
 Example 1 Apple stock minute data:
 
-![alt text](pics/example1_APPL.png.png)
+![alt text](pics/example1_APPL.png)
 
 ---
 
