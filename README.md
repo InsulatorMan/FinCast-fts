@@ -42,7 +42,7 @@ Run the env_setup.sh first then run the dep_install.sh. We use conda as the venv
 
 ## 📈 Inference
 
-FinCast supports **training-free inference** — simply download a checkpoint and start forecasting.
+FinCast supports **training-free inference** — simply download a checkpoint and start forecasting.  
 
 ✨ **Key Inference Features**  
 - ⚡ **Plug-and-Play**: *No training required*. Just load a checkpoint and run inference.  
@@ -51,7 +51,7 @@ FinCast supports **training-free inference** — simply download a checkpoint an
 - 🎲 **Probabilistic Forecasting**: Native **quantile outputs** for uncertainty & risk analysis.  
 - 🎯 **High Accuracy**: State-of-the-art performance across **financial benchmarks**.  
 
-📘 See the **Inference Notebook** for quick start examples.
+📘 See the **Inference Notebook** for quick start examples.  
 
 Example 1 Apple stock minute data:
 
@@ -72,8 +72,8 @@ Example 2 Ethereum minute data:
 
 ## ⚡ Future Updates
 
-- PEFT finetune(LORA/DORA) is done, just need to do some testing
-- Covariate Inference(currently implemented the same code as timesfm)
+- PEFT finetune(LORA/DORA) is done, just need to do some testing  
+- Covariate Inference(currently implemented the same code as timesfm)  
 
 
 
