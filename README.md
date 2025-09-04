@@ -40,9 +40,49 @@ Run the env_setup.sh first then run the dep_install.sh. We use conda as the venv
 - run the corresponding scripts in the scripts directory to reproduce the results in the paper. The result summary can be generate using the result summary notebook in the notebook directory.
 
 
+## 📈 Inference
+
+FinCast supports **training-free inference** — simply download a checkpoint and start forecasting.
+
+✨ **Key Inference Features**  
+- ⚡ **Plug-and-Play**: *No training required*. Just load a checkpoint and run inference.  
+- 📏 **Flexible Context & Horizon**: Choose **any input length** and **any forecast length**.  
+- 🎲 **Probabilistic Forecasting**: Native **quantile outputs** for uncertainty & risk analysis.  
+- 🎯 **High Accuracy**: State-of-the-art performance across **financial benchmarks**.  
+
+📘 See the **Inference Notebook** for quick start examples.
+
+Example:
+
+![alt text](example1_inf.png)
+
+---
+
+
+example:
+
+![alt text](example1_inf.png)
+
+
+## 🙌 Credits
+
+- This repository draws inspiration from [TimesFM (Google Research)](https://github.com/google-research/timesfm), as well as [ST-MoE - Pytorch](https://github.com/lucidrains/st-moe-pytorch).  
+
 
 ## ⚡ Future Updates
 
 - PEFT finetune(LORA/DORA) is done, just need to do some testing
 - Package together for easy inference
 - Covariate Inference(currently implemented the same code as timesfm)
+
+
+
+
+## ⚠️ Disclaimer
+
+This repository and the FinCast model are provided **for research and educational purposes only**.  
+We make **no guarantees** regarding the accuracy, reliability, or suitability of the forecasts for financial decision-making.  
+
+- This software does **not constitute financial advice**.  
+- The authors and contributors **are not responsible** for any financial losses, damages, or other consequences arising from the use of this model or its outputs.  
+- Users should evaluate and use the model **at their own risk**.  
