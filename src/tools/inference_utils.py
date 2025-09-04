@@ -4,7 +4,7 @@ from typing import List, Optional, Tuple, Union, Dict, Any
 from types import SimpleNamespace
 
 import logging
-
+import time
 import numpy as np
 import pandas as pd
 import torch
@@ -25,7 +25,164 @@ from contextlib import nullcontext
 
 
 
+def _slice_to_horizon(arr, H):
+    """Ensure the time dimension is exactly horizon H."""
+    if arr is None:
+        return None
+    if arr.ndim == 2:
+        # [N, T]
+        return arr[:, -H:] if arr.shape[1] != H else arr
+    if arr.ndim == 3:
+        # [N, T, D]
+        return arr[:, -H:, :] if arr.shape[1] != H else arr
+    raise ValueError(f"Unexpected array shape for horizon slicing: {arr.shape}")
 
+def _pick_last_window_indices(mapping_df):
+    """
+    Return a numpy array of row indices that correspond to the LAST window for each series,
+    robust for both sliding_windows=True/False.
+    """
+    if mapping_df is None or mapping_df.empty:
+        return np.array([], dtype=int)
+    if not {"series_idx", "window_end"}.issubset(mapping_df.columns):
+        # Fallback: assume already 1 per series in order.
+        return np.arange(len(mapping_df), dtype=int)
+    # one index per series: the row where window_end is maximal
+    idx = mapping_df.groupby("series_idx")["window_end"].idxmax().to_numpy()
+    # keep original CSV column order if present
+    return idx[np.argsort(mapping_df.loc[idx, "series_idx"].to_numpy())]
+
+def _validate_quantile_requests(full_all, requested_qs):
+    """
+    Map requested quantile numbers [1..9] to depth indices in full_all[..., D],
+    assuming convention D = 1 + Q (mean at depth 0, q1..qQ at 1..Q).
+    Returns a list of valid (q, depth_index) pairs preserving request order.
+    """
+    if full_all is None or full_all.ndim != 3:
+        return []
+    D = full_all.shape[2]
+    Q = D - 1
+    out = []
+    for q in requested_qs:
+        if isinstance(q, (int, np.integer)) and 1 <= q <= Q:
+            out.append((int(q), int(q)))  # depth index = q (0 is mean)
+    return out
+
+def _save_outputs_to_csv(mean_all, full_all, mapping_df, save_dir, prefix="fincast"):
+    """
+    Save mean and (if present) full outputs to CSV.
+    - mean CSV columns: mean_t+1 ... mean_t+H
+    - full CSV columns: mean_t+*, q1_t+*, ..., q9_t+* (only up to available Q)
+    Rows are per series (series_name if available, else series_idx).
+    Returns (path_mean_csv, path_full_csv or None).
+    """
+    os.makedirs(save_dir, exist_ok=True)
+    ts = time.strftime("%Y%m%d_%H%M%S")
+    # Determine row labels
+    if mapping_df is not None and "series_name" in mapping_df.columns:
+        row_names = mapping_df["series_name"].tolist()
+    elif mapping_df is not None and "series_idx" in mapping_df.columns:
+        row_names = [f"series_{i}" for i in mapping_df["series_idx"].tolist()]
+    else:
+        row_names = [f"series_{i}" for i in range(mean_all.shape[0])]
+
+    # Mean file
+    H = mean_all.shape[1]
+    mean_cols = [f"mean_t+{k+1}" for k in range(H)]
+    df_mean = pd.DataFrame(mean_all, columns=mean_cols, index=row_names)
+    p_mean = os.path.join(save_dir, f"{prefix}_mean_{ts}.csv")
+    df_mean.to_csv(p_mean)
+
+    # Full file (if available)
+    p_full = None
+    if full_all is not None:
+        D = full_all.shape[2]
+        Q = D - 1
+        stats = ["mean"] + [f"q{q}" for q in range(1, Q+1)]
+        cols = [f"{s}_t+{k+1}" for s in stats for k in range(H)]
+        flat = np.concatenate(
+            [full_all[:, :, 0]] + [full_all[:, :, d] for d in range(1, D)],
+            axis=1  # [N, H] concat over stats -> [N, H*(1+Q)]
+        )
+        df_full = pd.DataFrame(flat, columns=cols, index=row_names)
+        p_full = os.path.join(save_dir, f"{prefix}_full_{ts}.csv")
+        df_full.to_csv(p_full)
+
+    return p_mean, p_full
+
+def plot_last_outputs(
+    fincast_inference,
+    mean_all,          # preds from run_inference (np.ndarray [N, H’])
+    mapping_df,        # mapping from run_inference (pd.DataFrame)
+    full_all=None,     # full_outputs from run_inference (np.ndarray [N, H’, D]) or None
+    config=None
+):
+    """
+    For each selected column, plot the corresponding input context (last L points)
+    and the last forecast outputs (mean + optional quantiles).
+    Only one plot per column (the LAST window), even if sliding windows were used.
+    """
+    ds = fincast_inference.inference_dataset
+    L  = ds.L
+    H  = int(getattr(config, "horizon_len", mean_all.shape[1]))
+    # Slice to pure horizon if model returned on-context forecasts
+    mean_all = _slice_to_horizon(mean_all, H)
+    full_all = _slice_to_horizon(full_all, H)
+
+    # pick last-per-series indices
+    pick_idx = _pick_last_window_indices(mapping_df)
+    if pick_idx.size == 0:
+        print("Nothing to plot: mapping is empty.")
+        return
+
+    mean_sel = mean_all[pick_idx, :]
+    full_sel = None if full_all is None else full_all[pick_idx, :, :]
+
+    # Requested quantiles (e.g., [1,3,5,9]) -> depth indices
+    req_qs = getattr(config, "plt_quantiles", [])
+    qmap   = _validate_quantile_requests(full_sel, req_qs)  # list of (q, depth_index)
+
+    # Iterate series in the same order as dataset’s selected columns
+    for row_i, i in enumerate(pick_idx):
+        meta  = mapping_df.iloc[i].to_dict() if mapping_df is not None else {}
+        sidx  = meta.get("series_idx", row_i)
+        sname = meta.get("series_name", f"series_{sidx}")
+
+        # context (corresponding input)
+        ctx = ds.series_arrays[sidx][-L:]  # last L input values
+
+        # outputs
+        y_mean = mean_sel[row_i, :]  # [H]
+
+        # --- Plot ---
+        plt.figure(figsize=(10, 4))
+        x_ctx = np.arange(L)
+        x_fut = np.arange(L, L + H)
+
+        plt.plot(x_ctx, ctx, label="context", linewidth=1.5)
+        plt.plot(x_fut, y_mean, label="forecast (mean)", linewidth=2)
+
+        # Optional quantiles
+        if qmap:
+            for (q, d) in qmap:
+                yq = full_sel[row_i, :, d]  # [H]
+                plt.plot(x_fut, yq, linestyle="--", linewidth=1.3, label=f"q{q}")
+
+        plt.title(f"{sname}  |  L={L}, H={H}")
+        plt.xlabel("Time (relative index)")
+        plt.ylabel("Value")
+        plt.grid(True, alpha=0.3)
+        plt.legend(loc="best")
+        plt.tight_layout()
+        plt.show()
+
+    # Optional: save numeric outputs
+    if getattr(config, "save_output", False):
+        save_dir = getattr(config, "save_output_path", ".")
+        mean_csv, full_csv = _save_outputs_to_csv(mean_sel, full_sel, mapping_df.iloc[pick_idx], save_dir, prefix="fincast")
+        print(f"[saved] mean -> {mean_csv}")
+        if full_csv is not None:
+            print(f"[saved] full  -> {full_csv}")
 
 
 

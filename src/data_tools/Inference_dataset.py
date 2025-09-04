@@ -178,23 +178,3 @@ class TimeSeriesDataset_SingleCSV_Inference(Dataset):
 
 
 
-
-# -------- Collate that stacks tensors and preserves optional meta --------
-def collate_with_optional_meta(batch: List[Tuple]):
-    """
-    Works for:
-      - (x_ctx, x_pad, freq, x_fut)
-      - (x_ctx, x_pad, freq, x_fut, meta)
-    """
-    has_meta = (len(batch[0]) == 5)
-
-    x_ctx  = torch.stack([b[0] for b in batch], dim=0)  # [B,L,1]
-    x_pad  = torch.stack([b[1] for b in batch], dim=0)  # [B,L,1]
-    freq   = torch.stack([b[2] for b in batch], dim=0)  # [B,1]
-    x_fut  = torch.stack([b[3] for b in batch], dim=0)  # [B,0,1] (legal)
-    meta   = [b[4] for b in batch] if has_meta else None
-
-    return x_ctx, x_pad, freq, x_fut, meta
-
-
-
